@@ -23,7 +23,7 @@
 
 #include "utils.h"
 #include "npw-common.h"
-
+#include "npw-qvd-connection.h"
 #define DEBUG 1
 #include "debug.h"
 
@@ -578,11 +578,16 @@ static bool is_valid_NPEvent_type(NPEvent *event)
 static int do_send_XAnyEvent(rpc_message_t *message, XEvent *xevent)
 {
   int error;
+  // TODO XEvent handling
+  //  XEvent xeventcopy;
+  //  qvd_translate_xevent(&xeventcopy, xevent);
+
   if ((error = rpc_message_send_uint32(message, xevent->xany.serial)) < 0)
 	return error;
   if ((error = rpc_message_send_uint32(message, xevent->xany.send_event)) < 0)
 	return error;
   if ((error = rpc_message_send_uint32(message, xevent->xany.window)) < 0)
+  //  if ((error = rpc_message_send_uint32(message, xeventcopy.xany.window)) < 0)
 	return error;
   return RPC_ERROR_NO_ERROR;
 }
@@ -590,6 +595,7 @@ static int do_send_XAnyEvent(rpc_message_t *message, XEvent *xevent)
 static int do_send_XGraphicsExposeEvent(rpc_message_t *message, XEvent *xevent)
 {
   int error;
+
   if ((error = do_send_XAnyEvent(message, xevent)) < 0)
 	return error;
   if ((error = rpc_message_send_int32(message, xevent->xgraphicsexpose.x)) < 0)
@@ -611,6 +617,7 @@ static int do_send_XFocusChangeEvent(rpc_message_t *message, XEvent *xevent)
 static int do_send_XCrossingEvent(rpc_message_t *message, XEvent *xevent)
 {
   int error;
+
   if ((error = do_send_XAnyEvent(message, xevent)) < 0)
 	return error;
   if ((error = rpc_message_send_uint32(message, xevent->xcrossing.root)) < 0)
@@ -784,6 +791,7 @@ static int do_recv_XAnyEvent(rpc_message_t *message, XEvent *xevent)
 	return error;
   xevent->xany.serial = serial;
   xevent->xany.send_event = send_event;
+  /* TODO need to untranslate */
   xevent->xany.window = window;
   return RPC_ERROR_NO_ERROR;
 }

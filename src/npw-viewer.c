@@ -47,6 +47,7 @@
 #include "xembed.h"
 #include "npw-common.h"
 #include "npw-malloc.h"
+#include "npw-qvd-connection.h"
 
 #define DEBUG 1
 #include "debug.h"
@@ -690,11 +691,21 @@ static void xt_client_event_handler(Widget w, XtPointer client_data, XEvent *eve
 // Reconstruct window attributes
 static int create_window_attributes(NPSetWindowCallbackStruct *ws_info)
 {
+  D(bug("create_window_attributes %p\n", ws_info));
+
   if (ws_info == NULL)
 	return -1;
   GdkVisual *gdk_visual;
-  if (ws_info->visual)
+
+  D(bug("create_window_attributes %p\n", ws_info->visual));
+
+  if (ws_info->visual) {
 	gdk_visual = gdkx_visual_get((uintptr_t)ws_info->visual);
+	if (gdk_visual == NULL) {
+	  npw_printf("create_window_attributes from ws_info->visual, trying get_system\n");
+	  gdk_visual = gdk_visual_get_system();
+	}
+  }
   else
 	gdk_visual = gdk_visual_get_system();
   if (gdk_visual == NULL) {
@@ -745,6 +756,7 @@ static void fixup_size_hints(PluginInstance *plugin)
 // Create a new window from NPWindow
 static int create_window(PluginInstance *plugin, NPWindow *window)
 {
+  D(bug("create_window %p\n", window->window));
   // XXX destroy previous window here?
   if (plugin->is_windowless) {
 	destroy_window_attributes(plugin->window.ws_info);
@@ -756,6 +768,7 @@ static int create_window(PluginInstance *plugin, NPWindow *window)
   NPSetWindowCallbackStruct *ws_info;
   if ((ws_info = NPW_MemClone(NPSetWindowCallbackStruct, window->ws_info)) == NULL)
 	return -1;
+
   if (create_window_attributes(ws_info) < 0)
 	return -1;
   memcpy(&plugin->window, window, sizeof(*window));
@@ -766,20 +779,43 @@ static int create_window(PluginInstance *plugin, NPWindow *window)
   // that's all for windowless plugins
   if (plugin->is_windowless)
 	return 0;
+  
 
   // create the new window
   if (plugin->use_xembed) {
+    if (qvd_use_remote_plugin())
+      {
+	D(bug("create_window in use_xembed use_remote_invocation\n"));
 	GtkData *toolkit = calloc(1, sizeof(*toolkit));
 	if (toolkit == NULL)
 	  return -1;
-	toolkit->container = gtk_plug_new((GdkNativeWindow)window->window);
-	gtk_widget_set_size_request(toolkit->container, window->width, window->height); 
+
+	toolkit->container = gtk_window_new (GTK_WINDOW_POPUP);
+
+	if (toolkit->container == NULL)
+	  return -1;
+
+	gtk_widget_realize(toolkit->container);
+ 	gtk_widget_set_size_request(toolkit->container, window->width, window->height);
+
+	GdkWindow *parent = gdk_window_foreign_new((Window)window->window);
+	gdk_window_reparent(toolkit->container->window, parent, 0, 0);
+
 	gtk_widget_show(toolkit->container);
+
+	D(bug("create_window container is: %p\n", (void *)GDK_WINDOW_XID(toolkit->container->window)));
 	toolkit->socket = gtk_socket_new();
-	gtk_widget_show(toolkit->socket);
+	if (toolkit->socket == NULL)
+	  return -1;
+
+	gtk_widget_set_size_request (toolkit->socket, window->width, window->height);
 	gtk_container_add(GTK_CONTAINER(toolkit->container), toolkit->socket);
-	gtk_widget_show_all(toolkit->container);
-	window->window = (void *)gtk_socket_get_id(GTK_SOCKET(toolkit->socket));
+	gtk_widget_show (toolkit->socket);
+
+	D(bug("create_window socket is: %x\n", gtk_socket_get_id((GtkSocket *)toolkit->socket)));
+
+	window->window = (void *)(unsigned long) gtk_socket_get_id(GTK_SOCKET(toolkit->socket));
+
 	plugin->toolkit_data = toolkit;
 #if USE_XEMBED_HACK
 	// don't let the browser kill our window out of NPP_Destroy() scope
@@ -793,6 +829,34 @@ static int create_window(PluginInstance *plugin, NPWindow *window)
 	g_signal_connect(toolkit->socket, "plug_removed",
 					 G_CALLBACK(gtk_true), NULL);
 	return 0;
+  }
+ else
+      {
+	GtkData *toolkit = calloc(1, sizeof(*toolkit));
+	if (toolkit == NULL)
+	  return -1;
+	toolkit->container = gtk_plug_new((GdkNativeWindow)(unsigned long)window->window);
+	gtk_widget_set_size_request(toolkit->container, window->width, window->height); 
+	gtk_widget_show(toolkit->container);
+	toolkit->socket = gtk_socket_new();
+	gtk_widget_show(toolkit->socket);
+	gtk_container_add(GTK_CONTAINER(toolkit->container), toolkit->socket);
+	gtk_widget_show_all(toolkit->container);
+	window->window = (void *)(unsigned long)gtk_socket_get_id(GTK_SOCKET(toolkit->socket));
+	plugin->toolkit_data = toolkit;
+#if USE_XEMBED_HACK
+	// don't let the browser kill our window out of NPP_Destroy() scope
+	g_signal_connect(toolkit->container, "delete-event",
+					 G_CALLBACK(gtk_true), NULL);
+#endif
+	// make sure we don't try to destroy the widget again in destroy_window()
+	g_signal_connect(toolkit->container, "destroy",
+					 G_CALLBACK(gtk_widget_destroyed), &toolkit->container);
+	// keep the socket as the plugin tries to destroy the widget itself
+	g_signal_connect(toolkit->socket, "plug_removed",
+					 G_CALLBACK(gtk_true), NULL);
+	return 0;
+  }
   }
 
   XtData *toolkit = calloc(1, sizeof(*toolkit));
@@ -845,7 +909,7 @@ static int update_window(PluginInstance *plugin, NPWindow *window)
   }
 
   if (window->ws_info == NULL) {
-	npw_printf("ERROR: no window attributes for window %p\n", window->window);
+    npw_printf("ERROR: no window attributes for window %p\n", (void *)window->window);
 	return -1;
   }
 
@@ -870,6 +934,12 @@ static int update_window(PluginInstance *plugin, NPWindow *window)
 	if (plugin->toolkit_data) {
 	  if (plugin->use_xembed) {
 		// window size changes are already caught per the XEMBED protocol
+	        if (qvd_use_remote_plugin())
+		  {
+		    GtkData *toolkit = plugin->toolkit_data;
+		    gtk_widget_set_size_request (toolkit->container, window->width, window->height);
+		    gtk_widget_set_size_request (toolkit->socket, window->width, window->height);
+		  }
 	  }
 	  else {
 		XtData *toolkit = (XtData *)plugin->toolkit_data;
@@ -4971,8 +5041,9 @@ static int do_main(int argc, char **argv, const char *connection_path)
   // priority anyway from the sync mechanism.
   GPollFD rpc_fd = { 0 };
   rpc_fd.fd = rpc_socket(g_rpc_connection);
-  rpc_fd.events = G_IO_IN;
+  rpc_fd.events = G_IO_IN | G_IO_ERR | G_IO_HUP;
   g_main_context_add_poll(context, &rpc_fd, G_PRIORITY_HIGH);
+  D(bug("do_main: rpc_socket is %d\n", rpc_fd.fd));
 
   while (g_is_running) {
 	/* PREPARE */
@@ -4981,8 +5052,7 @@ static int do_main(int argc, char **argv, const char *connection_path)
 
 	/* QUERY */
 	int timeout, needed_fds;
-	while ((needed_fds = g_main_context_query(context, max_priority, &timeout,
-											  fds, fds_size)) > fds_size) {
+	while ((needed_fds = g_main_context_query(context, max_priority, &timeout, fds, fds_size)) > fds_size) {
 	  // Reallocate to make room
 	  fds_size = needed_fds;
 	  fds = g_renew(GPollFD, fds, fds_size);
@@ -5014,6 +5084,7 @@ static int do_main(int argc, char **argv, const char *connection_path)
 #if USE_NPIDENTIFIER_CACHE
   npidentifier_cache_destroy();
 #endif
+
 
   if (xt_source)
 	g_source_destroy(xt_source);
@@ -5058,6 +5129,7 @@ static int do_info(void)
   if (do_test() != 0)
 	return 1;
   const char *plugin_name = NULL;
+  qvd_unset_remote_plugin();
   if (g_NP_GetValue(NPPVpluginNameString, &plugin_name) == NPERR_NO_ERROR && plugin_name)
 	printf("PLUGIN_NAME %zd\n%s\n", strlen(plugin_name), plugin_name);
   const char *plugin_desc = NULL;
@@ -5071,17 +5143,18 @@ static int do_info(void)
 
 static int do_help(const char *prog)
 {
-  printf("%s, NPAPI plugin viewer. Version %s\n", NPW_VIEWER, NPW_VERSION);
-  printf("\n");
-  printf("usage: %s [GTK flags] [flags]\n", prog);
-  printf("   -h --help               print this message\n");
-  printf("   -t --test               check plugin is compatible\n");
-  printf("   -i --info               print plugin information\n");
-  printf("   -p --plugin             set plugin path\n");
-  printf("   -c --connection         set connection path\n");
+  fprintf(stderr, "%s, NPAPI plugin viewer. Version %s\n", NPW_VIEWER, NPW_VERSION);
+  fprintf(stderr, "\n");
+  fprintf(stderr, "usage: %s [GTK flags] [flags]\n", prog);
+  fprintf(stderr, "   -h --help               print this message\n");
+  fprintf(stderr, "   -t --test               check plugin is compatible\n");
+  fprintf(stderr, "   -i --info               print plugin information\n");
+  fprintf(stderr, "   -p --plugin             set plugin path\n");
+  fprintf(stderr, "   -c --connection         set connection path\n");
   return 0;
 }
 
+/* TODO remove useless connection_path */
 int main(int argc, char **argv)
 {
   const char *plugin_path = NULL;
@@ -5095,6 +5168,7 @@ int main(int argc, char **argv)
   };
   int cmd = CMD_RUN;
 
+  qvd_unset_remote_plugin();
   // Parse command line arguments
   for (int i = 0; i < argc; i++) {
 	const char *arg = argv[i];
@@ -5123,6 +5197,10 @@ int main(int argc, char **argv)
 		connection_path = argv[i];
 		argv[i] = NULL;
 	  }
+	}
+	else if (strcmp(arg, "-r") == 0 || strcmp(arg, "--remote-invocation") == 0) {
+	  argv[i] = NULL;
+	  qvd_set_remote_plugin();
 	}
   }
 

@@ -269,7 +269,7 @@ gtk_xtbin_realize (GtkWidget *widget)
   gint  x, y, w, h, d; /* geometry of window */
 
 #ifdef DEBUG_XTBIN
-  printf("gtk_xtbin_realize()\n");
+  fprintf(stderr, "gtk_xtbin_realize()\n");
 #endif
 
   g_return_if_fail (GTK_IS_XTBIN (widget));
@@ -283,7 +283,7 @@ gtk_xtbin_realize (GtkWidget *widget)
   gtk_widget_size_allocate (widget, &allocation);
 
 #ifdef DEBUG_XTBIN
-  printf("initial allocation %d %d %d %d\n", x, y, w, h);
+  fprintf(stderr, "initial allocation %d %d %d %d\n", x, y, w, h);
 #endif
 
   xtbin->width = widget->allocation.width;
@@ -335,7 +335,7 @@ gtk_xtbin_new (GdkWindow *parent_window, String * f)
      *  Bail out.
      */
 #ifdef DEBUG_XTBIN
-    printf("gtk_xtbin_init: XtOpenDisplay() returned NULL.\n");
+    fprintf(stderr, "gtk_xtbin_init: XtOpenDisplay() returned NULL.\n");
 #endif
     g_free (xtbin);
     return (GtkWidget *)NULL;
@@ -421,7 +421,7 @@ gtk_xtbin_resize (GtkWidget *widget,
   GtkAllocation allocation;
 
 #ifdef DEBUG_XTBIN
-  printf("gtk_xtbin_resize %p %d %d\n", (void *)widget, width, height);
+  fprintf(stderr, "gtk_xtbin_resize %p %d %d\n", (void *)widget, width, height);
 #endif
 
   xtbin->height = height;
@@ -454,7 +454,7 @@ gtk_xtbin_unrealize (GtkWidget *object)
   GtkWidget *widget;
 
 #ifdef DEBUG_XTBIN
-  printf("gtk_xtbin_unrealize()\n");
+  fprintf(stderr, "gtk_xtbin_unrealize()\n");
 #endif
 
   /* gtk_object_destroy() will already hold a refcount on object
@@ -476,7 +476,7 @@ gtk_xtbin_destroy (GtkObject *object)
   GtkXtBin *xtbin;
 
 #ifdef DEBUG_XTBIN
-  printf("gtk_xtbin_destroy()\n");
+  fprintf(stderr, "gtk_xtbin_destroy()\n");
 #endif
 
   g_return_if_fail (object != NULL);
@@ -495,7 +495,7 @@ gtk_xtbin_destroy (GtkObject *object)
        connection from the mainloop */
     if (0 == num_widgets) {
 #ifdef DEBUG_XTBIN
-      printf("removing the Xt connection from the main loop\n");
+      fprintf(stderr, "removing the Xt connection from the main loop\n");
 #endif
       g_main_context_remove_poll((GMainContext*)NULL, &xt_event_poll_fd);
       g_source_remove(tag);
@@ -535,7 +535,7 @@ xt_client_init( XtClient * xtclient,
 
   if (!xt_is_initialized) {
 #ifdef DEBUG_XTBIN
-    printf("starting up Xt stuff\n");
+    fprintf(stderr, "starting up Xt stuff\n");
 #endif
     XtToolkitInitialize();
     app_context = XtCreateApplicationContext();
@@ -567,7 +567,7 @@ xt_client_create ( XtClient* xtclient ,
   Widget        top_widget;
 
 #ifdef DEBUG_XTBIN
-  printf("xt_client_create() \n");
+  fprintf(stderr, "xt_client_create() \n");
 #endif
   top_widget = XtAppCreateShell("drawingArea", "Wrapper", 
                                 applicationShellWidgetClass, 
@@ -687,22 +687,22 @@ xt_client_handle_xembed_message(Widget w, XtPointer client_data, XEvent *event)
     break;
   case XEMBED_WINDOW_ACTIVATE:
 #ifdef DEBUG_XTBIN
-    printf("Xt client get XEMBED_WINDOW_ACTIVATE\n");
+    fprintf(stderr, "Xt client get XEMBED_WINDOW_ACTIVATE\n");
 #endif
     break;
   case XEMBED_WINDOW_DEACTIVATE:
 #ifdef DEBUG_XTBIN
-    printf("Xt client get XEMBED_WINDOW_DEACTIVATE\n");
+    fprintf(stderr, "Xt client get XEMBED_WINDOW_DEACTIVATE\n");
 #endif
     break;
   case XEMBED_MODALITY_ON:
 #ifdef DEBUG_XTBIN
-    printf("Xt client get XEMBED_MODALITY_ON\n");
+    fprintf(stderr, "Xt client get XEMBED_MODALITY_ON\n");
 #endif
     break;
   case XEMBED_MODALITY_OFF:
 #ifdef DEBUG_XTBIN
-    printf("Xt client get XEMBED_MODALITY_OFF\n");
+    fprintf(stderr, "Xt client get XEMBED_MODALITY_OFF\n");
 #endif
     break;
   case XEMBED_FOCUS_IN:
@@ -713,13 +713,13 @@ xt_client_handle_xembed_message(Widget w, XtPointer client_data, XEvent *event)
 
       if(event->xclient.data.l[1] == XEMBED_FOCUS_IN) {
 #ifdef DEBUG_XTBIN
-        printf("XTEMBED got focus in\n");
+        fprintf(stderr, "XTEMBED got focus in\n");
 #endif
         xevent.xfocus.type = FocusIn;
       }
       else {
 #ifdef DEBUG_XTBIN
-        printf("XTEMBED got focus out\n");
+        fprintf(stderr, "XTEMBED got focus out\n");
 #endif
         xevent.xfocus.type = FocusOut;
       }
@@ -769,7 +769,7 @@ xt_client_event_handler( Widget w, XtPointer client_data, XEvent *event)
       break;
     case KeyPress:
 #ifdef DEBUG_XTBIN
-      printf("Key Press Got!\n");
+      fprintf(stderr, "Key Press Got!\n");
 #endif
       break;
     default:
@@ -807,7 +807,7 @@ send_xembed_message (XtClient  *xtclient,
 
   if((errorcode = untrap_error())) {
 #ifdef DEBUG_XTBIN
-    printf("send_xembed_message error(%d)!!!\n",errorcode);
+    fprintf(stderr, "send_xembed_message error(%d)!!!\n",errorcode);
 #endif
   }
 }
@@ -832,7 +832,7 @@ untrap_error(void)
   XSetErrorHandler(old_error_handler);
   if(trapped_error_code) {
 #ifdef DEBUG_XTBIN
-    printf("Get X Window Error = %d\n", trapped_error_code);
+    fprintf(stderr, "Get X Window Error = %d\n", trapped_error_code);
 #endif
   }
   return trapped_error_code;

@@ -460,7 +460,7 @@ int main(void)
   // basic lookup
   id = ids[N_CELLS_PER_SLOT / 2];
   str = id_lookup(id);
-  printf("str(%d) : '%s'\n", id, str);
+  fprintf(stderr, "str(%d) : '%s'\n", id, str);
 
   // basic unlink
   id = ids[N_CELLS_PER_SLOT];
@@ -483,7 +483,7 @@ int main(void)
   // basic lookup after slot removal
   id = ids[2 * N_CELLS_PER_SLOT];
   str = id_lookup(id);
-  printf("str(%d) : '%s'\n", id, str);
+  fprintf(stderr, "str(%d) : '%s'\n", id, str);
 
   // check slot 1 was removed and slots 0 & 2 linked together
   for (i = 0; i < N_STRINGS; i++) {

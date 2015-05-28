@@ -594,13 +594,13 @@ static bool match_path_prefix(const char *path, const char *prefix)
   return strncmp(path, prefix, prefix_len) == 0 && path[prefix_len] == '/';
 }
 
-static bool is_user_home_path(const char *path)
-{
-  const char *homedir;
-  if ((homedir = g_get_home_dir()) == NULL)
-	return false;
-  return match_path_prefix(path, homedir);
-}
+//static bool is_user_home_path(const char *path)
+//{
+//  const char *homedir;
+//  if ((homedir = g_get_home_dir()) == NULL)
+//	return false;
+//  return match_path_prefix(path, homedir);
+//}
 
 static bool is_root_path(const char *path)
 {
@@ -621,7 +621,7 @@ typedef int (*process_plugin_cb)(const char *plugin_path, NPW_PluginInfo *plugin
 static int process_plugin_dir(const char *plugin_dir, is_plugin_cb test, process_plugin_cb process)
 {
   if (g_verbose)
-	printf("Looking for plugins in %s\n", plugin_dir);
+	fprintf(stderr, "Looking for plugins in %s\n", plugin_dir);
 
   DIR *dir = opendir(plugin_dir);
   if (dir == NULL)
@@ -717,10 +717,11 @@ static int do_install_plugin(const char *plugin_path, const char *plugin_dir, NP
   pi->struct_version = w_plugin_info.struct_version;
   strcpy(pi->viewer_path, plugin_info->viewer_path);
 
-  int mode = 0700;
-  if (!is_user_home_path(d_plugin_path) &&
-	  !is_root_only_accessible_plugin(plugin_dir))
-	mode = 0755;
+  // int mode = 0700;
+  // if (!is_user_home_path(d_plugin_path) &&
+  //	  !is_root_only_accessible_plugin(plugin_dir))
+  //	mode = 0755;
+  //  umask(mode);
 
   // TODO: Don't swallow the error message. Also get rid of these ridiculous
   // return codes. They're never acted on anyway. Use GError or something.
@@ -728,7 +729,7 @@ static int do_install_plugin(const char *plugin_path, const char *plugin_dir, NP
     return 4;
 
   if (g_verbose)
-	printf("  into %s\n", d_plugin_path);
+	fprintf(stderr, "  into %s\n", d_plugin_path);
 
   free(plugin_data);
   return 0;
@@ -739,7 +740,7 @@ static int install_plugin(const char *plugin_path, NPW_PluginInfo *plugin_info)
   int ret;
 
   if (g_verbose)
-	printf("Install plugin %s\n", plugin_path);
+	fprintf(stderr, "Install plugin %s\n", plugin_path);
 
   // don't install plugin system-wide if it is only accessible by root
   if (!is_root_only_accessible_plugin(plugin_path)) {
@@ -751,7 +752,7 @@ static int install_plugin(const char *plugin_path, NPW_PluginInfo *plugin_info)
   // don't install plugin in user home dir if already available system-wide
   if (has_system_wide_wrapper_plugin(plugin_path, true)) {
 	if (g_verbose)
-	  printf(" ... already installed system-wide, skipping\n");
+	  fprintf(stderr, " ... already installed system-wide, skipping\n");
 	return 0;
   }
 
@@ -775,7 +776,7 @@ static int auto_install_plugins(void)
 	for (i = 0; plugin_dirs[i] != NULL; i++) {
 	  const char *plugin_dir = plugin_dirs[i];
 	  if (g_verbose)
-		printf("Auto-install plugins from %s\n", plugin_dir);
+		fprintf(stderr, "Auto-install plugins from %s\n", plugin_dir);
 	  process_plugin_dir(plugin_dir, is_compatible_plugin, (process_plugin_cb)install_plugin);
 	}
   }
@@ -786,7 +787,7 @@ static int auto_install_plugins(void)
 static int remove_plugin(const char *plugin_path)
 {
   if (g_verbose)
-	printf("Remove plugin %s\n", plugin_path);
+	fprintf(stderr, "Remove plugin %s\n", plugin_path);
 
   if (unlink(plugin_path) < 0)
 	return 1;
@@ -807,7 +808,7 @@ static int auto_remove_plugins(void)
 	for (i = 0; plugin_dirs[i] != NULL; i++) {
 	  const char *plugin_dir = plugin_dirs[i];
 	  if (g_verbose)
-		printf("Auto-remove plugins from %s\n", plugin_dir);
+		fprintf(stderr, "Auto-remove plugins from %s\n", plugin_dir);
 	  process_plugin_dir(plugin_dir, (is_plugin_cb)is_wrapper_plugin_0, (process_plugin_cb)remove_plugin_cb);
 	}
   }
@@ -818,7 +819,7 @@ static int auto_remove_plugins(void)
 static int update_plugin(const char *plugin_path)
 {
   if (g_verbose)
-	printf("Update plugin %s\n", plugin_path);
+	fprintf(stderr, "Update plugin %s\n", plugin_path);
 
   int ret = 0;
   NPW_PluginInfo plugin_info;
@@ -829,13 +830,13 @@ static int update_plugin(const char *plugin_path)
 
   if (access(plugin_info.path, F_OK) < 0) {
 	if (g_verbose)
-	  printf("  NPAPI plugin %s is no longer available, removing wrapper\n", plugin_info.path);
+	  fprintf(stderr, "  NPAPI plugin %s is no longer available, removing wrapper\n", plugin_info.path);
 	ret = remove_plugin(plugin_path);
   }
   else if (has_system_wide_wrapper_plugin(plugin_info.path, true)
 		   && !g_str_has_prefix(plugin_path, get_system_mozilla_plugin_dir())) {
 	if (g_verbose)
-	  printf("  NPAPI plugin %s is already installed system-wide, removing wrapper\n", plugin_info.path);
+	  fprintf(stderr, "  NPAPI plugin %s is already installed system-wide, removing wrapper\n", plugin_info.path);
 	ret = remove_plugin(plugin_path);
   }
   else if (has_system_wide_wrapper_plugin(plugin_info.path, false)
@@ -844,26 +845,26 @@ static int update_plugin(const char *plugin_path)
 	   is a system-wide plugin to be removed. It will then be
 	   re-installed to the user (root) private mozilla plugins dir */
 	if (g_verbose)
-	  printf("  NPAPI plugin %s is accessible by root only, removing wrapper\n", plugin_info.path);
+	  fprintf(stderr, "  NPAPI plugin %s is accessible by root only, removing wrapper\n", plugin_info.path);
 	if ((ret = remove_plugin(plugin_path)) != 0)
 	  return ret;
 	if (g_verbose)
-	  printf ("  ... but re-installing it to root private mozilla plugins dir\n");
+	  fprintf(stderr, "  ... but re-installing it to root private mozilla plugins dir\n");
 	ret = install_plugin(plugin_info.path, &plugin_info);
   }
   else if (stat(plugin_info.path, &st) == 0 && st.st_mtime > plugin_info.mtime) {
 	if (g_verbose)
-	  printf("  NPAPI plugin %s was modified, reinstalling plugin\n", plugin_info.path);
+	  fprintf(stderr, "  NPAPI plugin %s was modified, reinstalling plugin\n", plugin_info.path);
 	ret = install_plugin(plugin_info.path, &plugin_info);
   }
   else if (strcmp(plugin_info.ident, NPW_PLUGIN_IDENT) != 0) {
 	if (g_verbose)
-	  printf("  nspluginwrapper ident mismatch, reinstalling plugin\n");
+	  fprintf(stderr, "  nspluginwrapper ident mismatch, reinstalling plugin\n");
 	ret = install_plugin(plugin_info.path, &plugin_info);
   }
   else {
 	if (g_verbose)
-	  printf("  wrapper ident matches and NPAPI plugin is unmodified, skipping\n");
+	  fprintf(stderr, "  wrapper ident matches and NPAPI plugin is unmodified, skipping\n");
   }
 
   return ret;
@@ -882,7 +883,7 @@ static int auto_update_plugins(void)
 	for (i = 0; plugin_dirs[i] != NULL; i++) {
 	  const char *plugin_dir = plugin_dirs[i];
 	  if (g_verbose)
-		printf("Auto-update plugins from %s\n", plugin_dir);
+		fprintf(stderr, "Auto-update plugins from %s\n", plugin_dir);
 	  process_plugin_dir(plugin_dir, (is_plugin_cb)is_wrapper_plugin_0, (process_plugin_cb)update_plugin_cb);
 	}
   }
@@ -896,10 +897,10 @@ static int list_plugin(const char *plugin_path)
   memset(&plugin_info, 0, sizeof(plugin_info));
   is_wrapper_plugin(plugin_path, &plugin_info);
 
-  printf("%s\n", plugin_path);
-  printf("  Original plugin: %s\n", plugin_info.path);
+  fprintf(stderr, "%s\n", plugin_path);
+  fprintf(stderr, "  Original plugin: %s\n", plugin_info.path);
   if (plugin_info.struct_version >= 2 && plugin_info.viewer_path[0] != '\0')
-	printf("  Plugin viewer: %s\n", plugin_info.viewer_path);
+	fprintf(stderr, "  Plugin viewer: %s\n", plugin_info.viewer_path);
   char *str = strtok(plugin_info.ident, ":");
   if (str && strcmp(str, "NPW") == 0) {
 	str = strtok(NULL, ":");
@@ -909,11 +910,11 @@ static int list_plugin(const char *plugin_path)
 	  str = strtok(NULL, ":");
 	}
 	if (str) {
-	  printf("  Wrapper version string: %s", str);
+	  fprintf(stderr, "  Wrapper version string: %s", str);
 	  str = strtok(NULL, ":");
 	  if (str)
-		printf(" (%s)", str);
-	  printf("\n");
+		fprintf(stderr, " (%s)", str);
+	  fprintf(stderr, "\n");
 	}
   }
 
@@ -927,19 +928,19 @@ static int list_plugin_cb(const char *plugin_path, void *unused)
 
 static void print_usage(void)
 {
-  printf("%s, configuration tool.  Version %s\n", NPW_CONFIG, NPW_VERSION);
-  printf("\n");
-  printf("   usage: %s [flags] [command [plugin(s)]]\n", NPW_CONFIG);
-  printf("\n");
-  printf("   -h --help               print this message\n");
-  printf("   -v --verbose            flag: set verbose mode\n");
-  printf("   -a --auto               flag: set automatic mode for plugins discovery\n");
-  printf("   -n --native             flag: allow native plugin(s) to be wrapped\n");
-  printf("   -l --list               list plugins currently installed\n");
-  printf("   -u --update [FILE(S)]   update plugin(s) currently installed\n");
-  printf("   -i --install [FILE(S)]  install plugin(s)\n");
-  printf("   -r --remove [FILE(S)]   remove plugin(s)\n");
-  printf("\n");
+  fprintf(stderr, "%s, configuration tool.  Version %s\n", NPW_CONFIG, NPW_VERSION);
+  fprintf(stderr, "\n");
+  fprintf(stderr, "   usage: %s [flags] [command [plugin(s)]]\n", NPW_CONFIG);
+  fprintf(stderr, "\n");
+  fprintf(stderr, "   -h --help               print this message\n");
+  fprintf(stderr, "   -v --verbose            flag: set verbose mode\n");
+  fprintf(stderr, "   -a --auto               flag: set automatic mode for plugins discovery\n");
+  fprintf(stderr, "   -n --native             flag: allow native plugin(s) to be wrapped\n");
+  fprintf(stderr, "   -l --list               list plugins currently installed\n");
+  fprintf(stderr, "   -u --update [FILE(S)]   update plugin(s) currently installed\n");
+  fprintf(stderr, "   -i --install [FILE(S)]  install plugin(s)\n");
+  fprintf(stderr, "   -r --remove [FILE(S)]   remove plugin(s)\n");
+  fprintf(stderr, "\n");
 }
 
 static int process_help(int argc, char *argv[])
@@ -974,7 +975,7 @@ static int process_list(int argvc, char *argv[])
 	for (i = 0; plugin_dirs[i] != NULL; i++) {
 	  const char *plugin_dir = plugin_dirs[i];
 	  if (g_verbose)
-		printf("List plugins in %s\n", plugin_dir);
+		fprintf(stderr, "List plugins in %s\n", plugin_dir);
 	  process_plugin_dir(plugin_dir, (is_plugin_cb)is_wrapper_plugin_0, (process_plugin_cb)list_plugin_cb);
 	}
   }

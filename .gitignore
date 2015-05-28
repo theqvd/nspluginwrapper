@@ -22,3 +22,5 @@ test-rpc-nested-2-client
 test-rpc-nested-2-server
 test-rpc-types-client
 test-rpc-types-server
+
+*~

@@ -277,7 +277,7 @@ main (int argc, char *argv[])
 
   g_strfreev (child_args);
 
-  if ((g_connection = rpc_init_client (g_connection_path)) == NULL)
+  if ((g_connection = rpc_init_client (g_connection_path, 0)) == NULL)
     g_error ("failed to initialize RPC client connection");
 #endif
 

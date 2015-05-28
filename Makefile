@@ -98,15 +98,19 @@ MOZILLA_CFLAGS = -I$(SRC_PATH)/npapi
 
 npwrapper_LIBRARY = npwrapper.so
 npwrapper_RAWSRCS = npw-wrapper.c npw-common.c npw-malloc.c npw-rpc.c rpc.c debug.c utils.c npruntime.c
+npwrapper_RAWSRCS += npw-qvd-connection.c
 npwrapper_SOURCES = $(npwrapper_RAWSRCS:%.c=$(SRC_PATH)/src/%.c)
 npwrapper_OBJECTS = $(npwrapper_RAWSRCS:%.c=npwrapper-%.os)
 npwrapper_CFLAGS  = $(CFLAGS) $(X_CFLAGS) $(MOZILLA_CFLAGS) $(GLIB_CFLAGS)
+npwrapper_CFLAGS += $(CURL_CFLAGS)
 npwrapper_LDFLAGS = $(LDFLAGS) $(libpthread_LDFLAGS)
+npwrapper_LDFLAGS += $(CURL_LDFLAGS)
 npwrapper_LIBS    = $(X_LIBS) $(libpthread_LIBS) $(libsocket_LIBS)
 npwrapper_LIBS   += $(GLIB_LIBS)
-
+npwrapper_LIBS   += $(CURL_LIBS)
 npviewer_PROGRAM  = npviewer.bin
 npviewer_RAWSRCS  = npw-viewer.c npw-common.c npw-malloc.c npw-rpc.c rpc.c debug.c utils.c npruntime.c
+npviewer_RAWSRCS += npw-qvd-connection.c
 npviewer_SOURCES  = $(npviewer_RAWSRCS:%.c=$(SRC_PATH)/src/%.c)
 npviewer_OBJECTS  = $(npviewer_RAWSRCS:%.c=npviewer-%.o)
 npviewer_CFLAGS   = $(CFLAGS_32)
@@ -114,10 +118,14 @@ npviewer_CFLAGS  += $(GTK_CFLAGS_32)
 npviewer_CFLAGS  += $(GLIB_CFLAGS_32)
 npviewer_CFLAGS  += $(X_CFLAGS_32)
 npviewer_CFLAGS  += $(MOZILLA_CFLAGS)
+npviewer_CFLAGS += $(CURL_CFLAGS)
 npviewer_LDFLAGS  = $(LDFLAGS_32)
 npviewer_LDFLAGS += $(libpthread_LDFLAGS)
+npviewer_LDFLAGS += $(CURL_LDFLAGS)
 npviewer_LIBS     = $(GTK_LIBS_32) $(GLIB_LIBS_32) $(X_LIBS_32)
 npviewer_LIBS    += $(libdl_LIBS) $(libpthread_LIBS)
+npviewer_LIBS   += $(GLIB_LIBS)
+npviewer_LIBS   += $(CURL_LIBS)
 ifeq ($(TARGET_OS):$(TARGET_ARCH),linux:i386)
 npviewer_MAPFILE  = $(SRC_PATH)/src/npw-viewer.map
 endif
@@ -136,6 +144,7 @@ endif
 
 npplayer_PROGRAM  = npplayer
 npplayer_SOURCES  = npw-player.c debug.c rpc.c utils.c glibcurl.c gtk2xtbin.c $(tidy_SOURCES)
+npplayer_SOURCES += npw-qvd-connection.c
 npplayer_OBJECTS  = $(npplayer_SOURCES:%.c=npplayer-%.o)
 npplayer_CFLAGS   = $(CFLAGS)
 npplayer_CFLAGS  += $(GTK_CFLAGS) $(GLIB_CFLAGS) $(MOZILLA_CFLAGS) $(CURL_CFLAGS) $(X_CFLAGS)
@@ -173,6 +182,8 @@ nploader_RAWSRCS = npw-viewer.sh
 nploader_SOURCES = $(nploader_RAWSRCS:%.sh=$(SRC_PATH)/src/%.sh)
 
 test_rpc_RAWSRCS		 = test-rpc-common.c debug.c rpc.c
+test_rpc_RAWSRCS		 = test-rpc-common.c debug.c rpc.c 
+test_rpc_RAWSRCS		+= npw-qvd-connection.c
 test_rpc_client_OBJECTS	 = $(test_rpc_RAWSRCS:%.c=%-client.o)
 test_rpc_server_OBJECTS	 = $(test_rpc_RAWSRCS:%.c=%-server.o)
 test_rpc_client_CPPFLAGS = $(CPPFLAGS) -I$(SRC_PATH)/src -DBUILD_CLIENT -DNPW_COMPONENT_NAME="\"Client\""
@@ -180,6 +191,7 @@ test_rpc_server_CPPFLAGS = $(CPPFLAGS) -I$(SRC_PATH)/src -DBUILD_SERVER -DNPW_CO
 test_rpc_CFLAGS			 = $(CFLAGS) -I$(SRC_PATH)/src $(GLIB_CFLAGS)
 test_rpc_LDFLAGS		 = $(LDFLAGS) $(libpthread_LDFLAGS)
 test_rpc_LIBS			 = $(GLIB_LIBS) $(libpthread_LIBS) $(libsocket_LIBS)
+test_rpc_LIBS			+= $(X_LIBS) $(CURL_LIBS)
 test_rpc_RAWPROGS		 = \
 	test-rpc-types \
 	test-rpc-nested-1 \

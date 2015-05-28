@@ -25,6 +25,8 @@
 #include <stdarg.h>
 #include <limits.h>
 #include <errno.h>
+#include <sys/time.h>
+#include <time.h>
 
 #include "debug.h"
 
@@ -72,7 +74,7 @@ static int _get_debug_level(void)
   return 0;
 }
 
-static inline int get_debug_level(void)
+int get_debug_level(void)
 {
   static int g_debug_level = -1;
   if (g_debug_level < 0)
@@ -151,8 +153,12 @@ static void npw_print_indent(FILE *fp)
 
 void npw_vprintf(const char *format, va_list args)
 {
+  struct timeval timeofday;
+  struct tm ltime;
+  gettimeofday (&timeofday, NULL);
+  ltime = *(localtime (&timeofday.tv_sec));
   FILE *log_file = npw_log_file();
-  fprintf(log_file, "*** NSPlugin %s *** ", NPW_COMPONENT_NAME);
+  fprintf(log_file, "[%02d:%02d:%02d.%06d] *** NSPlugin %s *** ", ltime.tm_hour, ltime.tm_min, ltime.tm_sec, (int)timeofday.tv_usec, NPW_COMPONENT_NAME);
   npw_print_indent(log_file);
   vfprintf(log_file, format, args);
   fflush(log_file);

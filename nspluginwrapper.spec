@@ -1,5 +1,5 @@
 %define name	nspluginwrapper
-%define version	1.4.4
+%define version	1.4.4.1
 %define release	1
 #define svndate DATE
 

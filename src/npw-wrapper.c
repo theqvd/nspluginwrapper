@@ -42,6 +42,10 @@
 #include <X11/Shell.h>
 #include <X11/StringDefs.h>
 
+/*#include "npw-use-tcp-sockets.h"
+#include "npw-remote-agent-info.h"
+*/
+#include "npw-qvd-connection.h"
 #include "utils.h"
 #include "npw-common.h"
 #include "npw-malloc.h"
@@ -86,6 +90,7 @@ typedef struct {
   char *name;
   char *description;
   char *formats;
+  int remote_socket;
 } Plugin;
 
 static Plugin g_plugin = { 0, -1, 0, NULL, NULL, NULL };
@@ -2254,6 +2259,8 @@ invoke_NPP_SetWindow(PluginInstance *plugin, NPWindow *window)
 static NPError
 g_NPP_SetWindow(NPP instance, NPWindow *window)
 {
+  NPWindow windowcopy;
+
   if (instance == NULL)
 	return NPERR_INVALID_INSTANCE_ERROR;
 
@@ -2261,10 +2268,34 @@ g_NPP_SetWindow(NPP instance, NPWindow *window)
   if (plugin == NULL)
 	return NPERR_INVALID_INSTANCE_ERROR;
 
-  D(bugiI("NPP_SetWindow instance=%p\n", instance));
-  NPError ret = invoke_NPP_SetWindow(plugin, window);
-  D(bugiD("NPP_SetWindow return: %d [%s]\n", ret, string_of_NPError(ret)));
-  return ret;
+  if (qvd_use_remote_plugin())
+    {
+      NPWindow *windowptr = window;
+      if (window && window->window) {
+	windowptr = &windowcopy;
+	memcpy(&windowcopy, window, sizeof(NPWindow));
+	D(bug("NPP_SetWindow remote_invocation=true before setting window=%p, window->window=%p, ptr size=%u\n", window, windowcopy.window, (unsigned)sizeof(windowcopy.window)));
+	windowcopy.window =qvd_translate_wid(windowcopy.window);
+	D(bug("NPP_SetWindow remote_invocation=true after setting window=%p->window=%p, ptr size=%u\n", window, windowcopy.window, (unsigned)sizeof(windowcopy.window)));
+	qvd_set_xprop_qvd_redirect_event(window->window);
+	D(bugiI("NPP_SetWindow instance=%p\n", instance));
+      }
+      if (windowptr == NULL || windowptr->window == NULL) {
+	npw_printf("NPP_SetWindow: ERROR translating window %p, window->window=%p. Not invoking remote NPP_SetWindow. Please check that you have the current qvd-nxagent package installed.\n", windowptr, (windowptr) ? windowptr->window: windowptr);
+	return NPERR_NO_ERROR;
+      }
+      NPError ret = invoke_NPP_SetWindow(plugin, windowptr);
+      D(bugiD("NPP_SetWindow return: %d [%s]\n", ret, string_of_NPError(ret)));
+      return ret;
+
+    }
+  else
+    {
+      D(bugiI("NPP_SetWindow instance=%p\n", instance));
+      NPError ret = invoke_NPP_SetWindow(plugin, window);
+      D(bugiD("NPP_SetWindow return: %d [%s]\n", ret, string_of_NPError(ret)));
+      return ret;
+    }
 }
 
 // Allows the browser to query the plug-in for information
@@ -2700,6 +2731,7 @@ g_NPP_WriteReady(NPP instance, NPStream *stream)
   D(bugiI("NPP_WriteReady instance=%p\n", instance));
   int32_t ret = invoke_NPP_WriteReady(plugin, stream);
   D(bugiD("NPP_WriteReady return: %d\n", ret));
+
   return ret;
 }
 
@@ -2770,6 +2802,7 @@ g_NPP_Write(NPP instance, NPStream *stream, int32_t offset, int32_t len, void *b
   D(bugiI("NPP_Write instance=%p\n", instance));
   int32_t ret = invoke_NPP_Write(plugin, stream, offset, len, buf);
   D(bugiD("NPP_Write return: %d\n", ret));
+
   return ret;
 }
 
@@ -2906,7 +2939,9 @@ static int16_t g_NPP_HandleEvent(NPP instance, void *event)
   }
 
   D(bugiI("NPP_HandleEvent instance=%p\n", instance));
-  int16_t ret = invoke_NPP_HandleEvent(plugin, event);
+  // TODO fix window mapping
+  //  int16_t ret = invoke_NPP_HandleEvent(plugin, event);
+  int16_t ret = RPC_ERROR_NO_ERROR;
   D(bugiD("NPP_HandleEvent return: %d\n", ret));
   return ret;
 }
@@ -3584,6 +3619,7 @@ invoke_NP_Initialize(uint32_t npapi_version,
 	npw_perror("NP_Initialize() invoke", error);
 	return NPERR_MODULE_LOAD_FAILED_ERROR;
   }
+  npw_printf("Sent NP_Initialize invoke\n");
 
   int32_t ret;
   error = rpc_method_wait_for_reply(g_rpc_connection,
@@ -3598,6 +3634,7 @@ invoke_NP_Initialize(uint32_t npapi_version,
 	npw_perror("NP_Initialize() wait for reply", error);
 	return NPERR_MODULE_LOAD_FAILED_ERROR;
   }
+  npw_printf("Got response for NP_Initialize\n");
 
   return ret;
 }
@@ -3791,6 +3828,7 @@ static void plugin_init(int is_NP_Initialize)
   if (g_plugin.initialized < 0)
 	return;
   g_plugin.initialized = -1;
+  g_plugin.remote_socket = -1;
 
   D(bug("plugin_init for %s\n", plugin_path));
   if (strcmp(plugin_path, NPW_DEFAULT_PLUGIN_PATH) == 0) {
@@ -3799,7 +3837,9 @@ static void plugin_init(int is_NP_Initialize)
 	return;
   }
 
+  D(bug("QVD after plugin_init check for default plugin_path %s\n", plugin_path));
   if (PLUGIN_DIRECT_EXEC){
+    D(bug("QVD after plugin_init check for default plugin_path %s with direct exec\n", plugin_path));
 	g_plugin.initialized = 1;
 	return;
   }
@@ -3823,13 +3863,16 @@ static void plugin_init(int is_NP_Initialize)
   // Cache MIME info and plugin name/description
   if (g_plugin.name == NULL &&
 	  g_plugin.description == NULL &&
-	  g_plugin.formats == NULL) {
-	char *command = g_strdup_printf("%s --info --plugin %s",
-									plugin_viewer_path, plugin_path);
+	  g_plugin.formats == NULL) 
+    {
+	char *command = g_strdup_printf("%s --info --plugin %s", plugin_viewer_path, plugin_path);
+	D(bug("QVD executing npwviewer: %s\n", command));
 	FILE *viewer_fp = popen(command, "r");
 	g_free(command);
-	if (viewer_fp == NULL)
+	if (viewer_fp == NULL) {
+	  D(bug("QVD executing npwviewer popen was null for command: %s. ERROR: %s\n", command, strerror(errno)));
 	  return;
+	}
 	char line[256];
 	while (fgets(line, sizeof(line), viewer_fp)) {
 	  // Read line
@@ -3866,37 +3909,62 @@ static void plugin_init(int is_NP_Initialize)
 	}
 	pclose(viewer_fp);
 	g_plugin.initialized = 1;
-  }
+	D(bug("QVD after npwviewer execute: plugin_name %s, plugin_desc %s, plugin_mime: %s\n", g_plugin.name, g_plugin.description, g_plugin.formats));
+
+    }
 
   if (!is_NP_Initialize)
 	return;
 
-  char *connection_path =
-	g_strdup_printf("%s/%s/%d-%d/%ld",
-					NPW_CONNECTION_PATH, plugin_file_name,
-					getpid(), init_count, random());
+  char * connection_path = g_strdup_printf("%s/%s/%d-%d/%ld",
+					   NPW_CONNECTION_PATH,plugin_file_name,
+					   getpid(), init_count, random());
+  /*
+  char *unique_id_path;
+  char * connection_path = g_strdup_printf("%s/%s/%d-%d/%ld",
+					   NPW_CONNECTION_PATH,plugin_file_name,
+					   getpid(), init_count, random());
 
+  unique_id_path = g_strdup_printf("%s-%d-%d", plugin_file_name, getpid(), init_count);
+  set_tcp_ip_and_remote_invocation_flags();
+  if (use_tcp_sockets())
+    {
+      // Use TCP sockets
+       set_remote_connection_path(connection_path, unique_id_path);
+    D(bug("QVD: plugin_init with test_server and test_port++ %s\n", connection_path));
+    } // End using tcp sockets
+  else
+    { // Using Unix Sockets
+      D(bug("QVD: plugin_init without test_server and test_port %s\n", connection_path));
+    }
+  */
+  int qvd_socket = -1;
   // Start plug-in viewer
-  if ((g_plugin.viewer_pid = fork()) == 0) {
-	char *argv[8];
-	int argc = 0;
-
-	argv[argc++] = NPW_VIEWER;
-	argv[argc++] = "--plugin";
-	argv[argc++] = (char *)plugin_path;
-	argv[argc++] = "--connection";
-	argv[argc++] = connection_path;
-	argv[argc] = NULL;
-
-	npw_close_all_open_files();
-
-	execv(plugin_viewer_path, argv);
-	npw_printf("ERROR: failed to execute NSPlugin viewer\n");
-	_Exit(255);
+  if (qvd_use_remote_plugin()) {
+    g_plugin.viewer_pid = -1;
+    qvd_socket = qvd_invoke_remote_plugin(g_plugin.name);
+  } else {
+    if ((g_plugin.viewer_pid = fork()) == 0) {
+      char *argv[8];
+      int argc = 0;
+      
+      argv[argc++] = NPW_VIEWER;
+      argv[argc++] = "--plugin";
+      argv[argc++] = (char *)plugin_path;
+      argv[argc++] = "--connection";
+      argv[argc++] = connection_path;
+      argv[argc] = NULL;
+      
+      npw_close_all_open_files();
+      
+      execv(plugin_viewer_path, argv);
+      npw_printf("ERROR: failed to execute NSPlugin viewer\n");
+      _Exit(255);
+    }
   }
 
   // Initialize browser-side RPC communication channel
-  if ((g_rpc_connection = rpc_init_client(connection_path)) == NULL) {
+if ((g_rpc_connection = rpc_init_client(connection_path, qvd_socket)) == NULL) {
 	npw_printf("ERROR: failed to initialize plugin-side RPC client connection\n");
 	g_free(connection_path);
 	return;
@@ -3972,6 +4040,7 @@ static void plugin_init(int is_NP_Initialize)
 	g_rpc_sync_source = rpc_sync_source_new(g_rpc_connection);
 	g_source_set_priority(g_rpc_sync_source, G_PRIORITY_HIGH);
 	g_source_attach(g_rpc_sync_source, NULL);
+	set_g_rpc_sync_source(g_rpc_sync_source);
   } else {							// X11
 	D(bug("  trying to attach RPC listener to main X11 event loop\n"));
 	XtAppContext x_app_context = NULL;
@@ -4026,6 +4095,7 @@ static void plugin_exit(void)
   if (g_rpc_sync_source) {
 	g_source_destroy(g_rpc_sync_source);
 	g_rpc_sync_source = NULL;
+	set_g_rpc_sync_source(g_rpc_sync_source);
   }
 
   if (g_rpc_connection) {
@@ -4034,28 +4104,27 @@ static void plugin_exit(void)
   }
 
   if (g_plugin.viewer_pid != -1) {
-	// let it shutdown gracefully, then kill it gently to no mercy
-	const int WAITPID_DELAY_TO_SIGTERM = 3;
-	const int WAITPID_DELAY_TO_SIGKILL = 3;
-	int counter = 0;
+    // let it shutdown gracefully, then kill it gently to no mercy
+    const int WAITPID_DELAY_TO_SIGTERM = 3;
+    const int WAITPID_DELAY_TO_SIGKILL = 3;
+    int counter = 0;
+    while (waitpid(g_plugin.viewer_pid, NULL, WNOHANG) == 0) {
+      if (++counter > WAITPID_DELAY_TO_SIGTERM) {
+	kill(g_plugin.viewer_pid, SIGTERM);
+	counter = 0;
 	while (waitpid(g_plugin.viewer_pid, NULL, WNOHANG) == 0) {
-	  if (++counter > WAITPID_DELAY_TO_SIGTERM) {
-		kill(g_plugin.viewer_pid, SIGTERM);
-		counter = 0;
-		while (waitpid(g_plugin.viewer_pid, NULL, WNOHANG) == 0) {
-		  if (++counter > WAITPID_DELAY_TO_SIGKILL) {
-			kill(g_plugin.viewer_pid, SIGKILL);
-			break;
-		  }
-		  sleep(1);
-		}
-		break;
+	  if (++counter > WAITPID_DELAY_TO_SIGKILL) {
+	    kill(g_plugin.viewer_pid, SIGKILL);
+	    break;
 	  }
 	  sleep(1);
 	}
-	g_plugin.viewer_pid = -1;
+	break;
+      }
+      sleep(1);
+    }
+    g_plugin.viewer_pid = -1;
   }
-
   g_plugin.initialized = 0;
 }
 

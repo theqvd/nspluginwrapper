@@ -53,7 +53,7 @@ extern rpc_connection_t *rpc_connection_ref(rpc_connection_t *connection) attrib
 extern void rpc_connection_unref(rpc_connection_t *connection) attribute_hidden;
 
 extern rpc_connection_t *rpc_init_server(const char *ident) attribute_hidden;
-extern rpc_connection_t *rpc_init_client(const char *ident) attribute_hidden;
+extern rpc_connection_t *rpc_init_client(const char *ident, int existing_socket) attribute_hidden;
 extern int rpc_exit(rpc_connection_t *connection) attribute_hidden;
 extern int rpc_listen_socket(rpc_connection_t *connection) attribute_hidden;
 extern int rpc_listen(rpc_connection_t *connection) attribute_hidden;
@@ -61,6 +61,7 @@ extern int rpc_dispatch(rpc_connection_t *connection) attribute_hidden;
 extern int rpc_wait_dispatch(rpc_connection_t *connection, int timeout) attribute_hidden;
 extern int rpc_dispatch_pending_sync(rpc_connection_t *connection) attribute_hidden;
 extern int rpc_socket(rpc_connection_t *connection) attribute_hidden;
+extern int rpc_server_socket(rpc_connection_t *connection) attribute_hidden;
 
 extern int rpc_sync(rpc_connection_t *connection) attribute_hidden;
 extern int rpc_end_sync(rpc_connection_t *connection) attribute_hidden;
@@ -129,6 +130,8 @@ extern int rpc_method_send_reply(rpc_connection_t *connection, ...) attribute_hi
 // Sources
 extern GSource *rpc_event_source_new(rpc_connection_t *connection) attribute_hidden;
 extern GSource *rpc_sync_source_new(rpc_connection_t *connection) attribute_hidden;
+extern void set_g_rpc_sync_source(GSource *s) attribute_hidden;
+extern void dispatch_rpc_sync_source() attribute_hidden;
 
 #ifdef __cplusplus
 }

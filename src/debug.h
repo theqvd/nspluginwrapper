@@ -31,6 +31,7 @@ extern "C" {
 extern G_GNUC_PRINTF(1, 2) void npw_dprintf(const char *format, ...) attribute_hidden;
 
 extern void npw_indent(int inc) attribute_hidden;
+extern int get_debug_level(void)  attribute_hidden;
 extern G_GNUC_PRINTF(2, 3) void npw_idprintf(int inc, const char *format, ...) attribute_hidden;
 
 extern G_GNUC_PRINTF(1, 2) void npw_printf(const char *format, ...) attribute_hidden;

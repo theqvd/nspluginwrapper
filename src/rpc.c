@@ -42,19 +42,22 @@
 #include <sys/wait.h>
 #include <sys/select.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
 #include <pthread.h>
 #include <inttypes.h>
 #include <time.h>
 
+#include "npw-qvd-connection.h"
 #include "rpc.h"
 #include "utils.h"
 
-#define DEBUG 0
+#define DEBUG 1
 #include "debug.h"
 
 
 // Define to use non-blocking I/O
-#define NON_BLOCKING_IO 1
+#define NON_BLOCKING_IO 0
 
 // Don't use anonymous sockets by default so that a generic Linux/i386
 // build of the viewer can interoperate with non-Linux wrappers. Linux
@@ -431,6 +434,8 @@ static int rpc_map_insert(rpc_map_t *map, int key, void *value)
 }
 
 
+
+
 /* ====================================================================== */
 /* === RPC Connection Handling                                        === */
 /* ====================================================================== */
@@ -448,7 +453,10 @@ struct rpc_connection {
   int status;
   int socket;
   char *socket_path;
-  struct sockaddr_un socket_addr;
+  struct sockaddr_un addr_unix;
+  struct sockaddr_in addr_inet;
+  struct sockaddr  *sock_addr;
+  int addr_inet_port;
   socklen_t socket_addr_len;
   int server_socket;
   int server_thread_active;
@@ -494,6 +502,8 @@ static inline bool _rpc_connection_is_sync_allowed(rpc_connection_t *connection)
 	npw_printf("ERROR: RPC is not allowed to receive MESSAGE_SYNC\n");
 	return false;
   }
+  D(bug("rpc_connection_is_sync_allowed pending_sync_depth(%d)==0\n", connection->pending_sync_depth));
+
   return connection->pending_sync_depth == 0;
 }
 
@@ -590,10 +600,25 @@ static inline int rpc_error_debug(rpc_connection_t *connection, int error, const
 // Returns socket fd or -1 if invalid connection
 int rpc_socket(rpc_connection_t *connection)
 {
-  if (connection == NULL)
-	return -1;
-
+  if (connection == NULL) {
+    D(bug("QVD: rpc_socket. Connection is null returning -1\n"));
+    return -1;
+  }
+  D(bug("QVD: rpc_socket. returning connection->socket=%d\n", connection->socket));
   return connection->socket;
+}
+
+
+// Returns socket fd or -1 if invalid connection
+int rpc_server_socket(rpc_connection_t *connection)
+{
+  if (connection == NULL) {
+    D(bug("QVD: rpc_server_socket. Connection is null returning -1\n"));
+    return -1;
+  }
+
+  D(bug("QVD: rpc_server_socket. returning connection->server_socket=%d\n", connection->server_socket));
+  return connection->server_socket;
 }
 
 // Prepare socket path for addr.sun_path[]
@@ -647,7 +672,7 @@ static int _rpc_socket_path(char **pathp, const char *ident)
 }
 
 // Create a new RPC connection (initialize common structure members)
-static rpc_connection_t *rpc_connection_new(int type, const char *ident)
+static rpc_connection_t *rpc_connection_new(int type, const char *ident, int existing_socket)
 {
   rpc_connection_t *connection;
 
@@ -681,34 +706,78 @@ static rpc_connection_t *rpc_connection_new(int type, const char *ident)
 	return NULL;
   }
 
-  int fd = socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0);
-  if (fd < 0) {
-	perror("socket");
+  int fd;
+  if (!qvd_use_remote_plugin())
+    { // Unix sockets
+      if ((fd = socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0)) < 0) {
+	perror("server socket unix");
 	rpc_exit(connection);
 	return NULL;
-  }
+      }
+
+      memset(&connection->addr_unix, 0, sizeof(connection->addr_unix));
+      connection->addr_unix.sun_family = AF_UNIX;
+      connection->socket_path = NULL;
+      connection->socket_addr_len = _rpc_socket_path(&connection->socket_path, ident);
+      memcpy(&connection->addr_unix.sun_path[0], connection->socket_path, connection->socket_addr_len);
+      connection->socket_addr_len += offsetof(struct sockaddr_un, sun_path); /* though POSIX says size of the actual sockaddr structure */
+#ifdef HAVE_SOCKADDR_UN_SUN_LEN
+      connection->addr_unix.sun_len = connection->socket_addr_len;
+#endif
+      connection->sock_addr=(struct sockaddr *) &connection->addr_unix;
+    } 
+  else 
+    { // qvd_use_remote_plugin
+      D(bug("QVD: creating tcp socket\n"));
+      if (type == RPC_CONNECTION_SERVER)
+	{
+	  // Do http request + upgrade = ident = plugin name
+	  fd = qvd_get_client_socket();
+	} else 
+	{ 
+	  // Use stdin+stdout 
+	  fd = existing_socket;
+	}
+
+      D(bug("QVD: tcp socket fd %d\n", fd));
+      /*      int on = 1;
+      if ((setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (char*)&on, sizeof(int))) < 0)
+	{
+	  perror("Error setting SO_REUSEADDR");
+	  rpc_exit(connection);
+	  return NULL;
+	}
+      D(bug("QVD: tcp socket SO_REUSEADDR\n"));
+      int setsockoptflag = 1;
+      if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (char *)&setsockoptflag, sizeof(setsockoptflag)) < 0)
+	{
+	  perror("Error setting TCP_NODELAY");
+	  rpc_exit(connection);
+	  return NULL;
+	}
+      D(bug("QVD: tcp socket TCP_NODELAY\n"));
+      */
+      D(bug("QVD: created tcp socket pid: %d, socket: %d\n", getpid(), fd));
+    }
+
 
   if (type == RPC_CONNECTION_SERVER)
+    {
 	connection->server_socket = fd;
-  else {
-	connection->socket = fd;
-
-	if (rpc_set_non_blocking_io(fd) < 0) {
+	D(bug("QVD: socket on server %d %p\n", fd, connection));
+    }
+  else
+    {
+      connection->socket = fd;
+      
+      D(bug("QVD: socket on client NON_BLOCKING\n"));
+      if (rpc_set_non_blocking_io(fd) < 0)
+	{
 	  perror("socket set non-blocking");
 	  rpc_exit(connection);
 	  return NULL;
 	}
-  }
-
-  memset(&connection->socket_addr, 0, sizeof(connection->socket_addr));
-  connection->socket_addr.sun_family = AF_UNIX;
-  connection->socket_path = NULL;
-  connection->socket_addr_len = _rpc_socket_path(&connection->socket_path, ident);
-  memcpy(&connection->socket_addr.sun_path[0], connection->socket_path, connection->socket_addr_len);
-  connection->socket_addr_len += offsetof(struct sockaddr_un, sun_path); /* though POSIX says size of the actual sockaddr structure */
-#ifdef HAVE_SOCKADDR_UN_SUN_LEN
-  connection->socket_addr.sun_len = connection->socket_addr_len;
-#endif
+    }
 
   return connection;
 }
@@ -767,44 +836,66 @@ rpc_connection_t *rpc_init_server(const char *ident)
 
   rpc_connection_t *connection;
 
-  if ((connection = rpc_connection_new(RPC_CONNECTION_SERVER, ident)) == NULL)
-	return NULL;
-
-  if (bind(connection->server_socket, (struct sockaddr *)&connection->socket_addr, connection->socket_addr_len) < 0) {
-	perror("server bind");
-	rpc_exit(connection);
+  if ((connection = rpc_connection_new(RPC_CONNECTION_SERVER, ident, 0)) == NULL) {
+    D(bug("rpc_connection_new error '%s'\n", ident));
 	return NULL;
   }
 
-  if (listen(connection->server_socket, 1) < 0) {
-	perror("server listen");
+  if (!qvd_use_remote_plugin())
+    { // Unix sockets for QVD no bind or listen is necessary
+
+      if (bind(connection->server_socket, connection->sock_addr, connection->socket_addr_len) < 0) {
+        char buffer[256];
+        perror("server bind");
+	struct sockaddr_in *my_addr_inet;
+	my_addr_inet = (struct sockaddr_in *) connection->sock_addr;
+	npw_printf("rpc_init_server: Server bind error %d, %s, socket %d, ptr %p, len %d, port %d %d, address %s\n",
+		   errno, strerror(errno), connection->server_socket, connection->sock_addr,
+		   connection->socket_addr_len, my_addr_inet->sin_port, ntohs(my_addr_inet->sin_port),
+		   inet_ntop(AF_INET, &(my_addr_inet->sin_addr.s_addr), buffer, 256));
 	rpc_exit(connection);
 	return NULL;
-  }
+      }
 
+      if (listen(connection->server_socket, 1) < 0) {
+        perror("server listen");
+	npw_printf("rpc_init_server: Server listen error %d, %s", errno, strerror(errno) );
+	rpc_exit(connection);
+	return NULL;
+      }
+    }
   connection->status = RPC_STATUS_ACTIVE;
   return connection;
 }
 
 // Initialize client-side RPC system
-rpc_connection_t *rpc_init_client(const char *ident)
+rpc_connection_t *rpc_init_client(const char *ident, int existing_socket)
 {
   D(bug("rpc_init_client ident='%s'\n", ident));
 
   rpc_connection_t *connection;
 
-  if ((connection = rpc_connection_new(RPC_CONNECTION_CLIENT, ident)) == NULL)
+  if ((connection = rpc_connection_new(RPC_CONNECTION_CLIENT, ident, existing_socket)) == NULL)
 	return NULL;
+
+  if (qvd_use_remote_plugin()) {
+    connection->status = RPC_STATUS_ACTIVE;
+    return connection;
+  }
+
 
   // Wait at most RPC_INIT_TIMEOUT seconds for server to initialize
   const int N_CONNECT_WAIT_DELAY = 10;
   int n_connect_attempts = (rpc_init_timeout() * 1000) / N_CONNECT_WAIT_DELAY;
   if (n_connect_attempts == 0)
 	n_connect_attempts = 1;
-  while (n_connect_attempts > 0) {
-	if (connect(connection->socket, (struct sockaddr *)&connection->socket_addr, connection->socket_addr_len) == 0)
+  while (n_connect_attempts > 0)
+    {
+      D(bug("rpc_init_client ident='%s' connection attempt %d\n", ident, n_connect_attempts));
+	if (connect(connection->socket, connection->sock_addr, connection->socket_addr_len) == 0)
 	  break;
-	if (n_connect_attempts > 1 && errno != ECONNREFUSED && errno != ENOENT) {
+      D(bug("rpc_init_client ident='%s' connection attempt %d failed\n", ident, n_connect_attempts));
+	if (n_connect_attempts > 1 && errno != ECONNREFUSED && errno != ENOENT && errno != EINPROGRESS && errno != EALREADY) {
 	  perror("client_connect");
 	  rpc_exit(connection);
 	  return NULL;
@@ -887,13 +978,27 @@ int rpc_listen_socket(rpc_connection_t *connection)
   if (connection->type != RPC_CONNECTION_SERVER)
 	return RPC_ERROR_CONNECTION_TYPE_MISMATCH;
 
-  struct sockaddr_un addr;
-  socklen_t addr_len = sizeof(addr);
-  if ((connection->socket = accept(connection->server_socket, (struct sockaddr *)&addr, &addr_len)) < 0)
+  if (qvd_use_remote_plugin()) {
+    connection->socket = qvd_get_client_socket();
+    D(bug("rpc_listen_socket in qvd_use_remote_plugin, already accepted is %d\n",
+	  connection->socket));
+
+    return connection->socket;
+  }
+
+  struct sockaddr_un addr_un;
+  struct sockaddr *addr;
+  socklen_t addr_len;
+  addr = (struct sockaddr *)&addr_un;
+  addr_len = sizeof(struct sockaddr_un);
+
+  if ((connection->socket = accept(connection->server_socket, addr, &addr_len)) < 0)
 	return RPC_ERROR_ERRNO_SET;
 
   if (rpc_set_non_blocking_io(connection->socket) < 0)
 	return RPC_ERROR_ERRNO_SET;
+
+  D(bug("rpc_listen_socket client socket is:%d\n", connection->socket));
 
   return connection->socket;
 }
@@ -930,11 +1035,12 @@ enum {
 };
 
 // Message type
+#define QVDBUFSIZ 1048576
 struct rpc_message_t {
   const rpc_map_t *types;
   int socket;
   int offset;
-  unsigned char buffer[BUFSIZ];
+  unsigned char buffer[QVDBUFSIZ];
 };
 
 // Add a user-defined marshaler
@@ -1619,8 +1725,10 @@ static int _rpc_dispatch_1(rpc_connection_t *connection, rpc_message_t *message)
 static int _rpc_dispatch(rpc_connection_t *connection, rpc_message_t *message)
 {
   ++connection->dispatch_depth;
+  D(bug("_rpc_dispatch ++dispatch_depth=%d\n", connection->dispatch_depth));
   int ret = _rpc_dispatch_1(connection, message);
   --connection->dispatch_depth;
+  D(bug("_rpc_dispatch --dispatch_depth=%d\n", connection->dispatch_depth));
   return ret;
 }
 
@@ -1631,15 +1739,21 @@ static int _rpc_dispatch_until(rpc_connection_t *connection, rpc_message_t *mess
   for (;;) {
 	int32_t msg_tag;
 	int error = rpc_message_recv_int32(message, &msg_tag);
+	D(bug("_rpc_dispatch_until tag %d was for expected_msg_tag %d\n", msg_tag, expected_msg_tag));
 	if (error != RPC_ERROR_NO_ERROR)
 	  return error;
 	if (msg_tag == expected_msg_tag)
 	  break;
 	switch (msg_tag) {
 	case RPC_MESSAGE_SYNC:
-	  if (!_rpc_connection_is_sync_allowed(connection))
-		return RPC_ERROR_MESSAGE_SYNC_NOT_ALLOWED;
+	  D(bug("_rpc_dispatch_until was SYNC for expected_msg_tag %d\n", expected_msg_tag));
+	  if (!_rpc_connection_is_sync_allowed(connection)) {
+	    D(bug("_rpc_dispatch_until was SYNC for expected_msg_tag %d, but !_rpc_connection_is_sync_allowed(connection)\n", expected_msg_tag));
+	    return RPC_ERROR_MESSAGE_SYNC_NOT_ALLOWED;
+	  }
 	  connection->pending_sync_depth = connection->invoke_depth;
+	  D(bug("_rpc_dispatch_until pending_sync_depth=invoke_depth=%d\n", connection->invoke_depth));
+	  dispatch_rpc_sync_source();
 	  break;
 	case RPC_MESSAGE_START:
 	  if ((error = _rpc_dispatch(connection, message)) < 0)
@@ -1707,6 +1821,7 @@ static bool rpc_has_pending_sync(rpc_connection_t *connection)
 	D(bug("rpc_has_pending_sync called on a nested event loop!\n"));
 	return false;
   }
+
   return connection->pending_sync_depth;
 }
 
@@ -1716,7 +1831,6 @@ static bool rpc_has_pending_sync(rpc_connection_t *connection)
 // done at event loop iteration boudaries.
 int rpc_dispatch_pending_sync(rpc_connection_t *connection)
 {
-  D(bug("rpc_dispatch_pending_sync\n"));
   // Don't run this on nested message loops. Chromium seems to pump
   // the message loop in the plugin process when waiting for
   // (Chromium-internal) IPC.
@@ -1877,6 +1991,8 @@ bool rpc_method_invoke_possible(rpc_connection_t *connection)
 	 "synchronized" with the other side. i.e. we are between an
 	 rpc_method_get_args() and rpc_method_send_reply() in an RPC handler
 	 function.  */
+  D(bug("rpc_method_invoke_possible dispatch_depth(%d)==handle_depth(%d)\n", connection->dispatch_depth, connection->handle_depth));
+
   return connection->dispatch_depth == connection->handle_depth;
 }
 
@@ -1929,6 +2045,7 @@ int rpc_method_invoke(rpc_connection_t *connection, int method, ...)
 	return RPC_ERROR_CONNECTION_CLOSED;
 
   ++connection->invoke_depth;
+  D(bug("rpc_method_invoke ++invoke_depth(%d)\n", connection->invoke_depth));
 
   va_list args;
   va_start(args, method);
@@ -1966,6 +2083,7 @@ int rpc_method_get_args(rpc_connection_t *connection, ...)
 	return RPC_ERROR_CONNECTION_CLOSED;
 
   ++connection->handle_depth;
+  D(bug("rpc_method_send_reply ++handle_depth(%d)\n", connection->handle_depth));
 
   va_list args;
   va_start(args, connection);
@@ -2016,17 +2134,21 @@ int rpc_method_wait_for_reply(rpc_connection_t *connection, ...)
 {
   D(bug("rpc_method_wait_for_reply\n"));
 
-  if (connection == NULL)
+  if (connection == NULL) {
+    D(bug("rpc_method_wait_for_reply connection null\n"));
 	return RPC_ERROR_CONNECTION_NULL;
-  if (_rpc_status(connection) == RPC_STATUS_CLOSED)
+  }
+  if (_rpc_status(connection) == RPC_STATUS_CLOSED) {
+    D(bug("rpc_method_wait_for_reply connection closed\n"));
 	return RPC_ERROR_CONNECTION_CLOSED;
-
+  }
   va_list args;
   va_start(args, connection);
   int ret = _rpc_method_wait_for_reply_valist(connection, args);
   va_end(args);
 
   --connection->invoke_depth;
+  D(bug("rpc_method_invoke --invoke_depth(%d)\n", connection->invoke_depth));
 
   return ret;
 }
@@ -2069,6 +2191,7 @@ int rpc_method_send_reply(rpc_connection_t *connection, ...)
   va_end(args);
 
   --connection->handle_depth;
+  D(bug("rpc_method_send_reply --handle_depth(%d)\n", connection->handle_depth));
 
   return ret;
 }
@@ -2099,6 +2222,7 @@ static gboolean rpc_event_check(GSource *source)
 static gboolean rpc_event_dispatch(GSource *source, GSourceFunc callback, gpointer data)
 {
   RpcSource *rsource = (RpcSource *) source;
+  D(bug("rpc_event_dispatch\n"));
   return rpc_dispatch(rsource->connection) != RPC_ERROR_CONNECTION_CLOSED;
 }
 
@@ -2139,11 +2263,24 @@ typedef struct _RpcSyncSource {
   rpc_connection_t *connection;
 } RpcSyncSource;
 
+static GSource *g_rpc_sync_source_ref = NULL;
+void set_g_rpc_sync_source(GSource *s) {
+  g_rpc_sync_source_ref = s;
+}
+
+void dispatch_rpc_sync_source() {
+  if (g_rpc_sync_source_ref) {
+    g_source_set_ready_time (g_rpc_sync_source_ref, 0);
+  }
+}
 static gboolean rpc_sync_prepare(GSource *source, gint *timeout)
 {
   RpcSyncSource *rsource = (RpcSyncSource *) source;
+  //  D(bug("rpc_sync_prepare called!\n"));
+
   if (rpc_has_pending_sync(rsource->connection)) {
 	*timeout = 0;
+	D(bug("rpc_sync_prepare called with return value TRUE\n"));
 	return TRUE;
   }
   *timeout = -1;
@@ -2152,13 +2289,15 @@ static gboolean rpc_sync_prepare(GSource *source, gint *timeout)
 
 static gboolean rpc_sync_check(GSource *source)
 {
-  RpcSyncSource *rsource = (RpcSyncSource *) source;
-  return rpc_has_pending_sync(rsource->connection);
+  RpcSyncSource *rsource = (RpcSyncSource *) source; 
+  gboolean returnvalue = rpc_has_pending_sync(rsource->connection);
+  return returnvalue;
 }
 
 static gboolean rpc_sync_dispatch(GSource *source, GSourceFunc callback, gpointer data)
 {
   RpcSyncSource *rsource = (RpcSyncSource *) source;
+  //  D(bug("rpc_sync_dispatch\n"));
   return rpc_dispatch_pending_sync(rsource->connection) != RPC_ERROR_CONNECTION_CLOSED;
 }
 
@@ -2272,7 +2411,7 @@ static int handle_ADD(rpc_connection_t *connection)
   if ((error = rpc_method_get_args(connection, RPC_TYPE_INT32, &a, RPC_TYPE_INT32, &b, RPC_TYPE_INT32, &c, RPC_TYPE_INVALID)) < 0)
 	return error;
 
-  printf("  > %d, %d, %d\n", a, b, c);
+  npw_printf("  > %d, %d, %d\n", a, b, c);
   return rpc_method_send_reply(connection, RPC_TYPE_INT32, a + b + c, RPC_TYPE_INVALID);
 }
 
@@ -2300,7 +2439,7 @@ static int handle_CHILD(rpc_connection_t *connection)
 	return error;
   if ((error = rpc_method_wait_for_reply(g_npp_connection, RPC_TYPE_INT32, &pid, RPC_TYPE_INVALID)) < 0)
 	return error;
-  printf("  > %d\n", pid);
+  npw_printf("  > %d\n", pid);
   return rpc_method_send_reply(connection, RPC_TYPE_INT32, pid + 1, RPC_TYPE_INVALID);
 }
 
@@ -2314,7 +2453,7 @@ static int handle_ECHO(rpc_connection_t *connection)
   if ((error = rpc_method_get_args(connection, RPC_TYPE_STRING, &str, RPC_TYPE_INVALID)) < 0)
 	return error;
 
-  printf("  > %s\n", str);
+  npw_printf("  > %s\n", str);
   free(str);
   return RPC_ERROR_NO_ERROR;
 }
@@ -2336,7 +2475,7 @@ static int handle_PRINT(rpc_connection_t *connection)
   if (error < 0)
 	return error;
 
-  printf("  > '%s', 0x%016" PRIx64 ", %f\n", str, val, dbl);
+  npw_printf("  > '%s', 0x%016" PRIx64 ", %f\n", str, val, dbl);
   free(str);
   return RPC_ERROR_NO_ERROR;
 }
@@ -2354,7 +2493,7 @@ static int handle_STRINGS(rpc_connection_t *connection)
 
   for (i = 0; i < strtab_length; i++) {
 	char *str = strtab[i];
-	printf("  > %s\n", str);
+	npw_printf("  > %s\n", str);
 	free(str);
   }
   free(strtab);
@@ -2375,7 +2514,7 @@ static int handle_POINTS(rpc_connection_t *connection)
   struct Point ptret = { 0, 0 };
   for (i = 0; i < pttab_length; i++) {
 	struct Point *pt = &pttab[i];
-	printf("  > { %d, %d }\n", pt->x, pt->y);
+	npw_printf("  > { %d, %d }\n", pt->x, pt->y);
 	ptret.x += pt->x;
 	ptret.y += pt->y;
   }
@@ -2398,7 +2537,8 @@ static int run_server(void)
   rpc_connection_t *connection;
 
   g_server_pid = getpid();
-  printf("Server PID: %d\n", g_server_pid);
+  npw_printf("Server PID: %d\n", g_server_pid);
+  D(bug("QVD: Server pid: %d\n", g_server_pid));
 
   if ((connection = rpc_init_server(g_npn_connection_path)) == NULL) {
 	fprintf(stderr, "ERROR: failed to initialize RPC server connection to NPN\n");
@@ -2411,7 +2551,7 @@ static int run_server(void)
 	return 0;
   }
 
-  if ((g_npp_connection = rpc_init_client(g_npp_connection_path)) == NULL) {
+  if ((g_npp_connection = rpc_init_client(g_npp_connection_path, 0)) == NULL) {
 	fprintf(stderr, "ERROR: failed to initialize RPC server connection to NPP\n");
 	return 0;
   }
@@ -2450,17 +2590,17 @@ static int run_server(void)
 	return 0;
   }
 
-  printf("Waiting for client to terminate\n");
+  npw_printf("Waiting for client to terminate\n");
   int status;
   while (waitpid(g_client_pid, &status, 0) != g_client_pid)
 	;
   if (WIFEXITED(status))
-	printf("  client exitted with status=%d\n", WEXITSTATUS(status));
+	npw_printf("  client exitted with status=%d\n", WEXITSTATUS(status));
   rpc_exit(g_npp_connection);
-  printf("  client connection closed\n");
+  npw_printf("  client connection closed\n");
 
   rpc_exit(g_npn_connection);
-  printf("Server exitted\n");
+  npw_printf("Server exitted\n");
   return 1;
 }
 
@@ -2471,9 +2611,10 @@ static int run_client(void)
   int error;
 
   g_client_pid = getpid();
-  printf("Client PID: %d\n", g_client_pid);
+  npw_printf("Client PID: %d\n", g_client_pid);
+  D(bug("QVD: Client pid: %d\n", g_client_pid));
 
-  if ((connection = rpc_init_client(g_npn_connection_path)) == NULL) {
+  if ((connection = rpc_init_client(g_npn_connection_path, 0)) == NULL) {
 	fprintf(stderr, "ERROR: failed to initialize RPC client connection to NPN\n");
 	return 0;
   }
@@ -2507,7 +2648,7 @@ static int run_client(void)
 	return 0;
   }
 
-  printf("Call CHILD\n");
+  npw_printf("Call CHILD\n");
   int32_t pid;
   if ((error = rpc_method_invoke(connection, TEST_RPC_METHOD_CHILD, RPC_TYPE_INVALID)) < 0) {
 	fprintf(stderr, "ERROR: failed to send CHILD message [%d]\n", error);
@@ -2521,9 +2662,9 @@ static int run_client(void)
 	fprintf(stderr, "ERROR: failed to receive correct pid of this child\n");
 	return 0;
   }
-  printf("  result: %d\n", pid - 1);
+  npw_printf("  result: %d\n", pid - 1);
 
-  printf("Call ADD\n");
+  npw_printf("Call ADD\n");
   int32_t value;
   if ((error = rpc_method_invoke(connection, TEST_RPC_METHOD_ADD, RPC_TYPE_INT32, 1, RPC_TYPE_INT32, 2, RPC_TYPE_INT32, 3, RPC_TYPE_INVALID)) < 0) {
 	fprintf(stderr, "ERROR: failed to send ADD message [%d]\n", error);
@@ -2533,10 +2674,10 @@ static int run_client(void)
 	fprintf(stderr, "ERROR: failed to receive ADD reply [%d]\n", error);
 	return 0;
   }
-  printf("  result: %d\n", value);
-  printf("  done\n");
+  npw_printf("  result: %d\n", value);
+  npw_printf("  done\n");
 
-  printf("Call ECHO\n");
+  npw_printf("Call ECHO\n");
   const char *str = "Coucou";
   if ((error = rpc_method_invoke(connection, TEST_RPC_METHOD_ECHO, RPC_TYPE_STRING, str, RPC_TYPE_INVALID)) < 0) {
 	fprintf(stderr, "ERROR: failed to send ECHO message [%d]\n", error);
@@ -2546,9 +2687,9 @@ static int run_client(void)
 	fprintf(stderr, "ERROR: failed to receive ECHO ack [%d]\n", error);
 	return 0;
   }
-  printf("  done\n");
+  npw_printf("  done\n");
 
-  printf("Call PRINT\n");
+  npw_printf("Call PRINT\n");
   error = rpc_method_invoke(connection,
 							TEST_RPC_METHOD_PRINT,
 							RPC_TYPE_STRING, "A string",
@@ -2563,9 +2704,9 @@ static int run_client(void)
 	fprintf(stderr, "ERROR: failed to receive PRINT ack [%d]\n", error);
 	return 0;
   }
-  printf("  done\n");
+  npw_printf("  done\n");
 
-  printf("Call STRINGS\n");
+  npw_printf("Call STRINGS\n");
   const char *strtab[] = { "un", "deux", "trois", "quatre" };
   if ((error = rpc_method_invoke(connection, TEST_RPC_METHOD_STRINGS, RPC_TYPE_ARRAY, RPC_TYPE_STRING, 4, strtab, RPC_TYPE_INVALID)) < 0) {
 	fprintf(stderr, "ERROR: failed to send STRINGS message [%d]\n", error);
@@ -2575,9 +2716,9 @@ static int run_client(void)
 	fprintf(stderr, "ERROR: failed to receive STRINGS ack [%d]\n", error);
 	return 0;
   }
-  printf("  done\n");
+  npw_printf("  done\n");
 
-  printf("Call POINTS\n");
+  npw_printf("Call POINTS\n");
   const struct Point pttab[] = {
 	{ -1,  0 },
 	{  2, -1 },
@@ -2593,10 +2734,10 @@ static int run_client(void)
 	fprintf(stderr, "ERROR: failed to receive POINTS reply [%d]\n", error);
 	return 0;
   }
-  printf("  result: { %d, %d }\n", pt.x, pt.y);
-  printf("  done\n");
+  npw_printf("  result: { %d, %d }\n", pt.x, pt.y);
+  npw_printf("  done\n");
 
-  printf("Call EXIT\n");
+  npw_printf("Call EXIT\n");
   if ((error = rpc_method_invoke(connection, TEST_RPC_METHOD_EXIT, RPC_TYPE_INVALID)) < 0) {
 	fprintf(stderr, "ERROR: failed to send EXIT message [%d]\n", error);
 	return 0;
@@ -2605,18 +2746,24 @@ static int run_client(void)
 	fprintf(stderr, "ERROR: failed to receive EXIT ack [%d]\n", error);
 	return 0;
   }
-  printf("  done\n");
+  npw_printf("  done\n");
 
-  printf("Sleep 2 seconds\n");
+  npw_printf("Sleep 2 seconds\n");
   sleep(2);
 
   rpc_exit(connection);
-  printf("Client exitted\n");
+  npw_printf("Client exitted\n");
   return 1;
 }
 
 int main(void)
 {
+  // Need to rewrite the connection path for testing
+  if (qvd_use_remote_plugin())
+    {
+      fprintf(stderr, "TCP sockets testing still not implemented\n");
+      return(1);
+    }
   sprintf(g_npn_connection_path, "/org/wrapper/NSPlugin/NPN/%d", getpid());
   sprintf(g_npp_connection_path, "/org/wrapper/NSPlugin/NPP/%d", getpid());
 

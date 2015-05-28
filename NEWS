@@ -1,6 +1,18 @@
 nspluginwrapper NEWS -- history of user-visible changes.  2011-06-30
 Copyright (C) 2005-2009 Gwenole Beauchesne
           (C) 2011 David Benjamin
+          (C) 2013 Nito Martinez 
+
+Version 1.4.4.1 - 26.Dic.2013
+* Allow to use remote plugins, by using TCP sockets instead of Unix sockets.
+* Need to set the following environment flags to activate it:
+  * NPW_NX_AGENT_URI=http://172.26.8.82:3000/translate . This provides given
+    a local window id the remote window to be used for the plugin
+  * NPW_REMOTE_AGENT_URI=http://172.26.8.82:3000
+    This provides some methods such as
+    * /get_rpc_host_port that provides the port to be used
+    * /execute_plugin to execute the remote plugin with npviewer.bin
+    * /kill_plugin to kill the plugin remotely
 
 Version 1.4.4 - 30.Jun.2011
 * Fix crash in some cases when the number of watched file descriptors decreases
